@@ -1,0 +1,76 @@
+====
+SWIM
+====
+Static WIkipedia Mirror
+
+运行必须的软件
+--------------
+
+* Python -- http://www.python.org/
+* Xapian -- http://www.xapian.org/
+* Django -- http://www.djangoproject.com/
+* mwlib -- http://code.pediapress.com/wiki/
+
+可选的软件
+----------
+
+* latex
+* dvips -- 以上两个软件用来生成数学公式。
+
+运行环境
+--------
+
+* Linux/UNIX系统。
+
+配置SWIM
+--------
+
+1. 下载SWIM
+
+2. 查看最近的维基百科备份数据库::
+
+  $ python swim.py -L
+
+  ...
+  2007-11-28 20:10:13     zhwiki/20071119
+  2007-11-29 13:53:20     zhwikibooks/20071129
+  2007-11-29 14:07:16     zhwikinews/20071129
+  2007-11-29 14:17:17     zhwikiquote/20071129
+  2007-11-29 15:44:00     zhwikisource/20071129
+  2007-11-30 06:19:55     zhwiktionary/20071130
+  ...
+
+ 每行为一个数据库的备份时间，以及数据库的备份名称。
+
+3. 下载一个数据库
+
+ 从上面的列表中选择一个数据库，把名称传给SWIM下载该文件。
+ 例如，下载中文维基百科的备份文件::
+
+  $ python swim.py -D zhwiki/20071119
+
+4. 下载完成之后，把备份文件拆分成多个小文件，存放到wiki-splits目录::
+
+  $ python swim.py -S -f zhwiki-20071119-pages-articles.xml.bz2 -A wiki-splits
+
+5. 对这些文件进行检索，在目录db中建立起查询数据库::
+
+  $ python swim.py -i -A wiki-splits -d db
+
+6. 启动web服务::
+
+  $ mkdir -f ~/pngmath # mwlib运行需要这个目录，用来存放数学公式及相应图片
+  $ cd mywiki
+  $ python manager runserver
+
+ 访问 http://127.0.0.1:8000/ 浏览百科条目
+
+TODO
+----
+
+* 把配置过程改为向导方式
+* 添加维基百科网站的css、img
+* 为个人使用提供更简单的web服务，把Django改为备选方案
+* 条目链接区分显示已编写、未编写条目
+* 中文繁简转换支持
+* 制作Windows版本
