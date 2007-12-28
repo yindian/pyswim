@@ -3,18 +3,23 @@
 
 import bz2
 import os
-BASE = os.path.dirname(os.path.abspath(__file__))
 import re
+import socket
+import StringIO
 import sys
-sys.path.append(BASE)
 import urllib2
 from xml.sax.saxutils import unescape
-import StringIO
 
 import xapian
-from mwlib import uparser, htmlwriter
+from mwlib import uparser, htmlwriter, rendermath, cdbwiki
 
-__version__ = '0.1'
+BASE = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(BASE)
+reload(sys)
+sys.setdefaultencoding('utf-8')
+socket.setdefaulttimeout(3)
+
+__version__ = '0.2'
 user_agent = 'StaticWikiMirror/%s' % __version__
 download_site = 'http://download.wikimedia.org/'
 index_url = download_site + 'backup-index.html'
@@ -22,8 +27,9 @@ re_database_item = re.compile(
     r'<li>([\d-]{10} [\d:]{8}) <a href="([^"]*)">([^<]*)</a>.*Dump complete')
 block_size = 8192
 articles_per_file = 100
-default_articles_dir = os.path.join(BASE, 'wiki-splits')
 default_database_dir = os.path.join(BASE, 'db')
+default_math_dir = BASE
+default_wiki_dir = BASE
 
 def open_url(url, resume=0):
     request = urllib2.Request(url)
@@ -35,20 +41,26 @@ def open_url(url, resume=0):
     return file
 
 def list_database():
-    html = open_url(index_url).read()
+    try:
+        html = open_url(index_url).read()
+    except:
+        print 'Network error'
+        return []
     items = []
     for line in html.split('\n'):
         mo = re_database_item.findall(line)
         if mo:
             items.append(mo[0])
+    databases = sorted(items, key=lambda x: x[1])
     print '%019s\t%s' % ('backup datetime', 'database')
     print '%019s\t%s' % ('='*19, '='*30)
-    for i in sorted(items, key=lambda x: x[1]):
-        print '%s\t%s' % (i[0], i[1])
+    for dt, database, name in databases:
+        print '%s\t%s' % (dt, database)
     print '%019s\t%s' % ('='*19, '='*30)
     print '%019s\t%s' % ('backup datetime', 'database')
     print
     print 'Select one database to download.'
+    return databases
 
 def download_database(database):
     filename = '%s-pages-articles.xml.bz2' % database.replace('/', '-')
@@ -76,9 +88,11 @@ def download_database(database):
             sys.stdout.write('\r%s/%s %.2f%%' % (i, size, i*100.0/size))
             sys.stdout.flush()
             data = u.read(block_size)
+        return filename
     except KeyboardInterrupt:
         print
         print 'user break'
+        return filename
 
 class QuickIndex:
     def __init__(self, db_dir):
@@ -86,17 +100,13 @@ class QuickIndex:
         self.indexer = xapian.TermGenerator()
         stemmer = xapian.Stem("english")
         self.indexer.set_stemmer(stemmer)
-        self.filename = ''
-
-    def set_filename(self, filename):
-        self.filename = filename
 
     def add_article(self, title):
         doc = xapian.Document()
-        target = '%s:%s' % (self.filename, title)
-        title = title.lower()
+        target = title
         doc.set_data(target)
         # 1st Source: the lowercased title
+        title = title.lower()
         doc.add_posting(title, 1)
         # 2nd source: All the title's lowercased words
         for i, word in enumerate(title.split(" /-_")):
@@ -105,63 +115,34 @@ class QuickIndex:
         self.indexer.index_text(target)
         self.db.add_document(doc)
 
-def read_titles(wiki_dir):
-    r = re.compile('<title>([^<]*)</title>')
-    for filename in os.listdir(wiki_dir):
-        if filename.startswith('rec') and filename.endswith('.bz2'):
-            yield '#' + filename
-            f = bz2.BZ2File(wiki_dir + '/' + filename)
-            for line in f:
-                mo = r.findall(line)
-                if mo:
-                    yield mo[0]
+def index_all(wiki_file, db_dir):
+    # build mwlib's wiki database: index and articles file
+    d = cdbwiki.BuildWiki(wiki_file, default_wiki_dir)
+    try:
+        d()
+    except SyntaxError:
+        d.out.flush()
+        d.cdb.finish()
+        d.cdb.outfile.close()
 
-def index_all(db_dir, wiki_dir):
+    c = cdbwiki.WikiDB(default_wiki_dir)
+    # build xapian index
     if not os.path.exists(db_dir):
         os.makedirs(db_dir)
-    if not os.path.exists(wiki_dir):
-        os.makedirs(wiki_dir)
-
     qi = QuickIndex(db_dir)
     total = 0
     try:
-        for line in read_titles(wiki_dir):
-            if line.startswith('#'):
-                filename = line[1:]
-                qi.set_filename(filename)
-                continue
-            #print line
-            qi.add_article(line)
+        for key in c.cdb.keys():
+            if key.startswith(':'):
+                qi.add_article(key[1:])
+            if key.startswith('T:'):
+                qi.add_article('Template:'+key[2:])
             total += 1
             if total % 1000 == 0:
                 print total, "articles indexed so far"
         print total, "articles indexed so far"
     except StopIteration:
         pass
-
-def split_articles(file, dir):
-    if isinstance(file, basestring):
-        file = bz2.BZ2File(file)
-    if not os.path.exists(dir):
-        os.makedirs(dir)
-
-    i = j = 0
-    def get_file(i):
-        new_name = '%s/rec-%d.xml.bz2' % (dir, i)
-        print new_name
-        new_file = bz2.BZ2File(new_name, 'w')
-        return new_name, new_file
-    new_name, new_file = get_file(i)
-    for line in file:
-        new_file.write(line)
-        if line.strip() == '</page>':
-            j += 1
-        if j > articles_per_file:
-            i += 1
-            j = 0
-            new_file.close()
-            new_name, new_file = get_file(i)
-    new_file.close()
 
 def search_articles(db_dir, keywords):
     try:
@@ -193,95 +174,112 @@ def search_articles(db_dir, keywords):
             percent = m[xapian.MSET_PERCENT]
             docid = m[xapian.MSET_DID]
             data = m[xapian.MSET_DOCUMENT].get_data()
-            data = data.strip('[]')
-            file, name = data.split(':', 1)
             #print "%i: %i%% docid=%i [%s]" % (m[xapian.MSET_RANK] + 1,
             #    m[xapian.MSET_PERCENT], m[xapian.MSET_DID],
             #    m[xapian.MSET_DOCUMENT].get_data())
             #print "%i%% [%s]" % (m[xapian.MSET_PERCENT],
             #        m[xapian.MSET_DOCUMENT].get_data())
-            ret.append([rank, percent, docid, file, name])
+            ret.append([rank, percent, docid, data])
         return ret
     except Exception, e:
         print >> sys.stderr, "Exception: %s" % str(e)
         return []
 
-def read_article(wiki_dir, file, name):
-    wiki = _read_article(wiki_dir, file, name)
-    return unescape(wiki)
-    #return wiki
+def xml_unescape(s):
+    return unescape(s, entities={
+        '&quot;': '"',
+        })
 
-def _read_article(wiki_dir, file, name):
-    f = bz2.BZ2File(os.path.join(wiki_dir, file))
-    output = []
-    line = f.readline()
-    r = re.compile(r'<title>%s</title>' % re.escape(name))
-    while line != '' and not r.findall(line):
-        line = f.readline()
-    tt = re.compile(r'<text[^>]*>(.*)</text>')
-    tb = re.compile(r'<text[^>]*>(.*)')
-    te = re.compile(r'(.*)</text>$')
-    inside_text = False
-    for x in range(2): # try another file only once
-        while line != '':
-            if not inside_text:
-                mo = tt.findall(line)
-                if mo:
-                    output.append(mo[0])
-                    return ''.join(output)
-                mo = tb.findall(line)
-                if mo:
-                    output.append(mo[0])
-                    inside_text = True
-            else:
-                while line != '':
-                    mo = te.findall(line)
-                    if mo:
-                        output.append(mo[0])
-                        return ''.join(output)
-                    output.append(line)
-                    line = f.readline()
-            line = f.readline()
-        # next file
-        def inc(mo):
-            index = int(mo.groups()[0])
-            return "rec%05d" % (index + 1)
-        file = re.sub(r'rec(\d{5})', inc, file)
-        f = bz2.BZ2File(file)
-        line = f.readline()
-    return ''.join(output)
-
-def parse_wiki(wiki):
-    a = uparser.simpleparse(wiki.decode('utf8'))
+def parse_wiki(name, wiki, make_math_png=False):
+    c = cdbwiki.WikiDB(default_wiki_dir)
+    a = uparser.parseString(name, raw=wiki, wikidb=c)
     out = StringIO.StringIO()
-    w = htmlwriter.HTMLWriter(out, None)
+    mr = rendermath.Renderer(basedir=default_math_dir,
+            lazy=(not make_math_png))
+    w = htmlwriter.HTMLWriter(out, images=None, math_renderer=mr)
     w.write(a)
     return out.getvalue()
 
-def get_wiki(db_dir, wiki_dir, name):
-    ret = search_articles(db_dir, [name])
-    if ret:
-        rank, percent, docid, file, name = ret[0]
-        return read_article(wiki_dir, file, name)
-    return ''
+def get_wiki(name):
+    c = cdbwiki.WikiDB(default_wiki_dir)
+    wiki = c.getRawArticle(name)
+    if wiki:
+        return xml_unescape(wiki)
+    else:
+        return ''
+
+def setup_wizard(file=None):
+    print 'Setup wizard'
+    print
+    print 'Input a database name, to download it; or a articles.xml.bz2'
+    print 'file path to reuse it. Press L to list databases avalialbe.'
+    databases = []
+    articles_file = None
+    if (file is not None) and os.path.exists(file):
+        articles_file = file
+    while articles_file is None:
+        database = raw_input('Input database name, or a downloaded filename'
+            '(L to list databases): ')
+        database = database.strip()
+        if not database:
+            continue
+        if os.path.exists(database):
+            articles_file = database
+            break
+        if database.upper() == 'L':
+            databases = list_database()
+            continue
+        if re.match(r'\w+/\d{8}', database):
+            print 'download database %s now...' % database
+            articles_file = download_database(database)
+            break
+        find = [d for t,d,n in databases if d.startswith(database)]
+        if len(find):
+            database = find[0]
+            print 'Do you mean this database: %s,' % database,
+            a = raw_input('(Y/N): ')
+            if a.strip().upper() != 'Y':
+                database = ''
+        else:
+            print 'Not found this database in list.'
+            a = raw_input('Forece download(Y/N): ')
+            if a.strip().upper() != 'Y':
+                database = ''
+        if database:
+                print 'download database %s now...' % database
+                articles_file = download_database(database)
+                break
+    print
+    print 'Do you want use this article file: %s, size: %d' % (
+            articles_file, os.path.getsize(articles_file)),
+    if (file is not None) and os.path.exists(file):
+        a = 'Y'
+        print '(Y/N): Y'
+    else:
+        a = raw_input('(Y/N): ')
+    index_database = 'db'
+    if a.upper() == 'Y':
+        print 'index all articles now'
+        index_all(articles_file, index_database)
+    print
+    print 'SWIM setup finished. Please run these commands to start up server:'
+    print '  cd mywiki'
+    print '  python manager.py runserver'
 
 def run():
     from optparse import OptionParser
     parser = OptionParser(version='%prog ' + __version__,
-            usage="%prog [-dfisDLS] keywords...")
+            usage="%prog [-dfgisDLW] keywords...")
+    parser.add_option('-W', '--setup-wizard', action='store_true',
+            help='setup mirror using the wizard')
     parser.add_option('-L', '--list-databases', action='store_true',
             help='list databases can download')
     parser.add_option('-D', '--download-database', type='string',
             help='download a database, for example: enwiki/20071018')
-    parser.add_option('-A', '--articles-dir', type='string',
-            default=default_articles_dir,
-            help='splitted articles files storage dir ARTICLES-DIR')
-    parser.add_option('-S', '--split-articles', action='store_true',
-            help='split articles backup files into dir ARTICLES-DIR')
     parser.add_option('-f', '--articles-file', type='string',
             help='backuped articles database file')
     parser.add_option('-i', '--index-all', action='store_true',
-            help='index all xml article files in dir INDEX-ALL')
+            help='index all xml articles in file ARTICLES-FILE')
     parser.add_option('-d', '--index-database', type='string',
             default=default_database_dir,
             help='xapian index database dir')
@@ -293,8 +291,20 @@ def run():
             help="generate article's html source code")
     (options, args) = parser.parse_args()
 
+    if options.setup_wizard:
+        try:
+            file = args[0]
+        except:
+            file = None
+        try:
+            sys.exit(setup_wizard(file))
+        except KeyboardInterrupt:
+            print
+            print 'user break'
+            sys.exit(1)
+
     # check
-    if not options.articles_file and options.split_articles:
+    if not options.articles_file and options.index_all:
         parser.error('must give a database file with -f')
     if not args and options.search_articles:
         parser.error('must give some keywords')
@@ -302,32 +312,23 @@ def run():
             options.search_articles or options.article_wiki or
             options.generate_html):
         parser.error('must give a index database dir with -d')
-    if not options.articles_dir and (options.index_all or
-            options.split_articles or options.article_wiki or
-            options.generate_html):
-        parser.error('must special a articles storage dir with -A')
 
     if options.list_databases:
         list_database()
     elif options.download_database:
         download_database(options.download_database)
-    elif options.split_articles:
-        split_articles(options.articles_file, options.articles_dir)
     elif options.index_all:
-        index_all(options.index_database, options.articles_dir)
+        index_all(options.articles_file, options.index_database)
     elif options.search_articles:
-        for rank, percent, docid, file, name in search_articles(
+        for rank, percent, docid,  name in search_articles(
                 options.index_database, args):
-            print '%2d %s%% docid=%s file=%s [%s]' % (
-                rank, percent, docid, file, name)
+            print '%2d %s%% docid=%s [%s]' % (rank, percent, docid, name)
     elif options.article_wiki:
-        print get_wiki(options.index_database, options.articles_dir,
-                options.article_wiki)
+        print get_wiki(options.article_wiki)
     elif options.generate_html:
-        wiki = get_wiki(options.index_database, options.articles_dir,
-                options.generate_html)
+        wiki = get_wiki(options.generate_html)
         if wiki:
-            print parse_wiki(wiki)
+            print parse_wiki(options.generate_html, wiki)
     else:
         parser.print_help()
 
