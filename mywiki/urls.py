@@ -1,7 +1,10 @@
 import os
+import sys
+sys.path.append('..')
 
 from django.conf.urls.defaults import *
 from django.http import HttpResponseRedirect
+from swim import default_math_dir
 
 def redirect(url):
     def inner(request):
@@ -15,7 +18,7 @@ urlpatterns = patterns('',
     (r'^search/(?P<article>.+?)/?$', 'views.search'),
     (r'^article/(?P<article>.+?)/?$', 'views.article'),
     (r'^pngmath/(?P<path>.*)/$', 'django.views.static.serve',
-        {'document_root': os.path.expanduser("~/pngmath/")}),
-    (r'^images/(?P<path>.*)$', 'django.views.static.serve',
-        {'document_root': '../mediawiki_sa/images/math'}),
+        {'document_root': os.path.join(default_math_dir, 'pngmath/')}),
+    (r'^resources/(?P<path>.*)$', 'django.views.static.serve',
+        {'document_root': os.path.join(default_math_dir, 'resources/')}),
 )

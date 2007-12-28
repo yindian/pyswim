@@ -1,11 +1,30 @@
+# coding: utf-8
 import os
 import re
 import sys
+reload(sys)
+sys.setdefaultencoding('utf8')
 sys.path.append('..')
 
 from django.http import *
+from mwlib import cdbwiki
 
 from swim import *
+
+HEAD = """<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN"
+   "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>%s</title>
+<link rel="StyleSheet" href="/resources/main.css" type="text/css">
+</head>
+<body>
+"""
+
+TAIL = """</body>
+</html>
+"""
 
 SEARCH_BAR = """<script type="text/javascript">
 function DoSearch(form)
@@ -16,16 +35,16 @@ top.location='/searchbar/?data='+form.data.value;
 <form name="SearchForm" onSubmit="DoSearch(this.form)" method="get" action="/searchbar">
 Search for
 <input type="text" name="data" size="50">
-<input type="button" value="Submit" onclick="DoSearch(this.form)">
+<input type="submit" value="Submit" onclick="DoSearch(this.form)">
 <br>
 <hr>
 </form>
 """
 
 def get_html(name):
-    wiki = get_wiki(default_database_dir, default_articles_dir, name)
+    wiki = cdbwiki.WikiDB('..').getRawArticle(name)
     if wiki:
-        return parse_wiki(wiki)
+        return parse_wiki(name, wiki, make_math_png=True)
 
 def index(request):
     return article(request, "Wikipedia")
@@ -38,7 +57,7 @@ def article(request, article):
         result = SEARCH_BAR + html
     else:
         return search(request, article)
-    return HttpResponse(result)
+    return HttpResponse((HEAD % article) + result + TAIL)
 
 def search(request, article, multi=False):
     if multi:
@@ -49,20 +68,25 @@ def search(request, article, multi=False):
         keywords = [article]
     lines = search_articles(default_database_dir, keywords)
     if len(lines) == 0:
-        result = """<html><head><title>Wikipedia has nothing about this.</title>
-</head><body>Wikipedia has nothing about this.<br/>
+        result = """%s
+Wikipedia has nothing about this.
 You can keyword search about it <a href="/keyword/%s">here</a><br/><br/>
 Or search otherelse:<br/>
 %s
-</body></html>""" % (article, SEARCH_BAR)
+%s
+""" % ((HEAD % 'Wikipedia has nothing about this.'),
+        article, SEARCH_BAR, TAIL)
     else:
-        result = """<html><head><title>Choose one</title>
-</head><body><h1>Choose one of the options below</h1>
-"""
-        for rank, percent, docid, file, name in lines:
-            result += '(%s) <A HREF="/article/%s">%s</A><br/>\n' % (percent,
-                    name, name)
-        result += "Or serch here: %s</body></html>" % SEARCH_BAR
+        result = """%s
+<h1>Choose one of the options below</h1>
+""" % (HEAD % 'Choose one')
+        result += '<ul>\n'
+        for rank, percent, docid, name in lines:
+            result += '<li>(%s) <A HREF="/article/%s">%s</A></li>\n' % (
+                    percent, name, name)
+        result += '</ul>\n'
+        result += "<br/>Or serch here: %s" % SEARCH_BAR
+        result += TAIL
     return HttpResponse(result)
 
 def keyword(request, article):
